@@ -7,6 +7,8 @@
 *.dll
 *.so
 *.dylib
+bin
+testbin/*
 
 # Test binary, built with `go test -c`
 *.test
@@ -19,3 +21,13 @@
 
 # Go workspace file
 go.work
+
+# Editor and IDE paraphernalia
+.idea
+*.swp
+*.swo
+*~
+
+.DS_Store
+*.*_
+*_

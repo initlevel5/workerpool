@@ -21,7 +21,7 @@ func main() {
 
 	ctx := context.Background()
 
-	pool := workerpool.NewWorkerPool(nWorkers, nTasks)
+	pool := workerpool.New(nWorkers, nTasks)
 
 	pool.Run(ctx)
 
@@ -42,7 +42,7 @@ func main() {
 	for i := 0; i < nTasks; i++ {
 		task := workerpool.NewTask(withTimeout, i+1, i, taskFunc)
 
-		pool.AddTask(task)
+		_ = pool.AddTask(task)
 
 		wg.Add(1)
 		go func() {

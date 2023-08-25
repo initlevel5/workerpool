@@ -2,6 +2,7 @@ package workerpool
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -11,6 +12,8 @@ const (
 	queueLenMax       = 1024
 	queueLenDefault   = 16
 )
+
+var ErrClosed = errors.New("closed")
 
 type TaskFunc func(context.Context, int, interface{}) error
 
@@ -33,16 +36,8 @@ func NewTask(ctx context.Context, id int, data interface{}, f TaskFunc) *Task {
 	}
 }
 
-func (t Task) Context() context.Context {
-	return t.ctx
-}
-
 func (t Task) Id() int {
 	return t.id
-}
-
-func (t Task) Data() interface{} {
-	return t.data
 }
 
 func (t Task) Done() <-chan struct{} {
@@ -56,10 +51,13 @@ func (t Task) Err() error {
 type workerPool struct {
 	numWorkers int
 	tasks      chan *Task
-	stop, done chan struct{}
+	done       chan struct{}
+	once       sync.Once
+	closed     bool
+	mu         sync.Mutex
 }
 
-func NewWorkerPool(numWorkers, queueLen int) *workerPool {
+func New(numWorkers, queueLen int) *workerPool {
 	if numWorkers <= 0 || numWorkers > numWorkersMax {
 		numWorkers = numWorkersDefault
 	}
@@ -71,51 +69,72 @@ func NewWorkerPool(numWorkers, queueLen int) *workerPool {
 	return &workerPool{
 		numWorkers: numWorkers,
 		tasks:      make(chan *Task, queueLen),
-		stop:       make(chan struct{}, 1),
 		done:       make(chan struct{}, 1),
 	}
 }
 
 func (wp *workerPool) Run(ctx context.Context) {
-	go func() {
-		defer close(wp.done)
+	wp.once.Do(func() {
+		go func() {
+			defer close(wp.done)
 
-		var wg sync.WaitGroup
+			var wg sync.WaitGroup
 
-		for i := 0; i < wp.numWorkers; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			for i := 0; i < wp.numWorkers; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
 
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-wp.stop:
-						return
-					case task, ok := <-wp.tasks:
-						if !ok {
+					for {
+						select {
+						case <-ctx.Done():
 							return
+						case task, ok := <-wp.tasks:
+							if !ok {
+								return
+							}
+							task.err = task.f(task.ctx, task.id, task.data)
+							close(task.done)
 						}
-						task.err = task.f(task.ctx, task.id, task.data)
-						close(task.done)
 					}
-				}
-			}()
-		}
+				}()
+			}
 
-		wg.Wait()
-	}()
+			wg.Wait()
+		}()
+	})
 }
 
-func (wp workerPool) Stop() {
-	close(wp.stop)
+func (wp *workerPool) IsClosed() bool {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+
+	return wp.closed
 }
 
-func (wp workerPool) Wait() {
+func (wp *workerPool) Stop() {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+
+	if !wp.closed {
+		close(wp.tasks)
+		wp.closed = true
+	}
+}
+
+func (wp *workerPool) Wait() {
 	<-wp.done
 }
 
-func (wp *workerPool) AddTask(t *Task) {
+func (wp *workerPool) AddTask(t *Task) error {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+
+	if wp.closed {
+		return ErrClosed
+	}
+
 	wp.tasks <- t
+
+	return nil
 }

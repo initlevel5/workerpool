@@ -15,49 +15,14 @@ const (
 
 var ErrClosed = errors.New("closed")
 
-type TaskFunc func(context.Context, int, interface{}) error
-
-type Task struct {
-	ctx  context.Context
-	id   int
-	data interface{}
-	f    TaskFunc
-	done chan struct{}
-	err  error
-}
-
-func NewTask(ctx context.Context, id int, data interface{}, f TaskFunc) *Task {
-	return &Task{
-		ctx:  ctx,
-		id:   id,
-		data: data,
-		f:    f,
-		done: make(chan struct{}, 1),
-	}
-}
-
-func (t Task) Id() int {
-	return t.id
-}
-
-func (t Task) Done() <-chan struct{} {
-	return t.done
-}
-
-func (t Task) Err() error {
-	return t.err
-}
-
 type workerPool struct {
-	numWorkers int
-	tasks      chan *Task
-	done       chan struct{}
-	once       sync.Once
-	closed     bool
-	mu         sync.Mutex
+	tasks  chan func()
+	wg     sync.WaitGroup
+	closed bool
+	mu     sync.RWMutex
 }
 
-func New(numWorkers, queueLen int) *workerPool {
+func New(ctx context.Context, numWorkers, queueLen int) *workerPool {
 	if numWorkers <= 0 || numWorkers > numWorkersMax {
 		numWorkers = numWorkersDefault
 	}
@@ -66,75 +31,91 @@ func New(numWorkers, queueLen int) *workerPool {
 		queueLen = queueLenDefault
 	}
 
-	return &workerPool{
-		numWorkers: numWorkers,
-		tasks:      make(chan *Task, queueLen),
-		done:       make(chan struct{}, 1),
+	pool := &workerPool{
+		tasks: make(chan func(), queueLen),
 	}
+
+	for i := 0; i < numWorkers; i++ {
+		pool.wg.Add(1)
+
+		go worker(ctx, &pool.wg, pool.tasks)
+	}
+
+	return pool
 }
 
-func (wp *workerPool) Run(ctx context.Context) {
-	wp.once.Do(func() {
-		go func() {
-			defer close(wp.done)
+func (p *workerPool) AddTask(task func()) bool {
+	return p.addTask(task, false)
+}
 
-			var wg sync.WaitGroup
+func (p *workerPool) MustAddTask(task func()) bool {
+	return p.addTask(task, true)
+}
 
-			for i := 0; i < wp.numWorkers; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+func (p *workerPool) addTask(task func(), must bool) bool {
+	if task == nil {
+		return false
+	}
 
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						case task, ok := <-wp.tasks:
-							if !ok {
-								return
-							}
-							task.err = task.f(task.ctx, task.id, task.data)
-							close(task.done)
-						}
-					}
-				}()
+	if p.IsClosed() {
+		if must {
+			panic(ErrClosed)
+		}
+		return false
+	}
+
+	if !must {
+		select {
+		case p.tasks <- task:
+			return true
+		default:
+			return false
+		}
+	}
+
+	p.tasks <- task
+
+	return true
+}
+
+func (p *workerPool) IsClosed() (closed bool) {
+	p.mu.RLock()
+	closed = p.closed
+	p.mu.RUnlock()
+
+	return
+}
+
+func (p *workerPool) Stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return
+	}
+
+	p.closed = true
+	close(p.tasks)
+}
+
+func (p *workerPool) Wait() {
+	p.wg.Wait()
+}
+
+func worker(ctx context.Context, wg *sync.WaitGroup, tasks <-chan func()) {
+	defer func() {
+		wg.Done()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case task, ok := <-tasks:
+			if task == nil || !ok {
+				return
 			}
-
-			wg.Wait()
-		}()
-	})
-}
-
-func (wp *workerPool) IsClosed() bool {
-	wp.mu.Lock()
-	defer wp.mu.Unlock()
-
-	return wp.closed
-}
-
-func (wp *workerPool) Stop() {
-	wp.mu.Lock()
-	defer wp.mu.Unlock()
-
-	if !wp.closed {
-		close(wp.tasks)
-		wp.closed = true
+			task()
+		}
 	}
-}
-
-func (wp *workerPool) Wait() {
-	<-wp.done
-}
-
-func (wp *workerPool) AddTask(t *Task) error {
-	wp.mu.Lock()
-	defer wp.mu.Unlock()
-
-	if wp.closed {
-		return ErrClosed
-	}
-
-	wp.tasks <- t
-
-	return nil
 }

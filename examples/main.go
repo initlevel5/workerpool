@@ -7,61 +7,62 @@ import (
 	"time"
 
 	"github.com/initlevel5/workerpool"
+	"go.uber.org/multierr"
+)
+
+const (
+	numTasks            = 10
+	numWorkers          = 2
+	timeoutSec          = 10
+	hardWorkDurationSec = 2
 )
 
 func main() {
-	const (
-		nTasks              = 10
-		nWorkers            = 2
-		timeoutSec          = 20
-		hardWorkDurationSec = 2
+	var (
+		err error
+		wg  sync.WaitGroup
 	)
-
-	var wg sync.WaitGroup
 
 	ctx := context.Background()
 
-	pool := workerpool.New(nWorkers, nTasks)
+	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), timeoutSec*time.Second)
+	defer cancel()
 
-	pool.Run(ctx)
+	pool := workerpool.New(ctx, numWorkers, numTasks)
 
-	taskFunc := func(ctx context.Context, id int, data interface{}) error {
-		fmt.Printf("%d:start work\n", id)
+	errCh := make(chan error, numTasks)
 
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("interrupted: %w", ctx.Err())
-		case <-time.After(hardWorkDurationSec * time.Second):
-			return nil
+	for i := 0; i < numTasks; i++ {
+		id := i + 1
+
+		if pool.AddTask(func() {
+			defer wg.Done()
+
+			fmt.Printf("%d:start work\n", id)
+
+			select {
+			case <-ctxWithTimeout.Done():
+				errCh <- fmt.Errorf("%d: interrupted: %w", id, ctxWithTimeout.Err())
+			case <-time.After(hardWorkDurationSec * time.Second):
+				return
+			}
+		}) {
+			wg.Add(1)
 		}
 	}
 
-	withTimeout, cancel := context.WithTimeout(ctx, timeoutSec*time.Second)
-	defer cancel()
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
 
-	for i := 0; i < nTasks; i++ {
-		task := workerpool.NewTask(withTimeout, i+1, i, taskFunc)
-
-		_ = pool.AddTask(task)
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			select {
-			case <-task.Done():
-				if err := task.Err(); err != nil {
-					fmt.Printf("%d:error: %v\n", task.Id(), err)
-					return
-				}
-				fmt.Printf("%d:done\n", task.Id())
-			case <-ctx.Done():
-				fmt.Println(ctx.Err())
-			}
-		}()
+	for e := range errCh {
+		err = multierr.Append(err, e)
 	}
 
-	wg.Wait()
+	if err != nil {
+		fmt.Println(err)
+	}
 
 	pool.Stop()
 	pool.Wait()

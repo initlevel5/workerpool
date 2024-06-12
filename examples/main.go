@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -11,10 +13,10 @@ import (
 )
 
 const (
-	numTasks            = 10
-	numWorkers          = 2
-	timeoutSec          = 10
-	hardWorkDurationSec = 2
+	numTasks         = 10
+	numWorkers       = 2
+	timeout          = 1 * time.Second
+	hardWorkDuration = 2 * time.Second
 )
 
 func main() {
@@ -23,12 +25,25 @@ func main() {
 		wg  sync.WaitGroup
 	)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
-	ctxWithTimeout, cancel := context.WithTimeout(context.Background(), timeoutSec*time.Second)
-	defer cancel()
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, os.Interrupt)
 
-	pool := workerpool.New(ctx, numWorkers, numTasks)
+	defer func() {
+		signal.Stop(signalCh)
+		cancel()
+	}()
+
+	go func() {
+		select {
+		case <-signalCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	pool := workerpool.New(numWorkers, numTasks)
 
 	errCh := make(chan error, numTasks)
 
@@ -38,12 +53,16 @@ func main() {
 		if pool.AddTask(func() {
 			defer wg.Done()
 
-			fmt.Printf("%d:start work\n", id)
+			ctxWithTimeout, ctxWithTimeoutCancel := context.WithTimeout(ctx, timeout)
+			defer ctxWithTimeoutCancel()
+
+			fmt.Printf("%d:started\n", id)
 
 			select {
 			case <-ctxWithTimeout.Done():
 				errCh <- fmt.Errorf("%d: interrupted: %w", id, ctxWithTimeout.Err())
-			case <-time.After(hardWorkDurationSec * time.Second):
+			case <-time.After(hardWorkDuration):
+				fmt.Printf("%d:finished\n", id)
 				return
 			}
 		}) {

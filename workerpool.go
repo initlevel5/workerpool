@@ -1,7 +1,6 @@
 package workerpool
 
 import (
-	"context"
 	"errors"
 	"sync"
 )
@@ -22,7 +21,7 @@ type workerPool struct {
 	mu     sync.RWMutex
 }
 
-func New(ctx context.Context, numWorkers, queueLen int) *workerPool {
+func New(numWorkers, queueLen int) *workerPool {
 	if numWorkers <= 0 || numWorkers > numWorkersMax {
 		numWorkers = numWorkersDefault
 	}
@@ -38,10 +37,26 @@ func New(ctx context.Context, numWorkers, queueLen int) *workerPool {
 	for i := 0; i < numWorkers; i++ {
 		pool.wg.Add(1)
 
-		go worker(ctx, &pool.wg, pool.tasks)
+		go worker(&pool.wg, pool.tasks)
 	}
 
 	return pool
+}
+
+func worker(wg *sync.WaitGroup, tasks <-chan func()) {
+	defer wg.Done()
+
+	for {
+		select {
+		//case <-ctx.Done():
+		//	return
+		case task, ok := <-tasks:
+			if task == nil || !ok {
+				return
+			}
+			task()
+		}
+	}
 }
 
 func (p *workerPool) AddTask(task func()) bool {
@@ -100,22 +115,4 @@ func (p *workerPool) Stop() {
 
 func (p *workerPool) Wait() {
 	p.wg.Wait()
-}
-
-func worker(ctx context.Context, wg *sync.WaitGroup, tasks <-chan func()) {
-	defer func() {
-		wg.Done()
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case task, ok := <-tasks:
-			if task == nil || !ok {
-				return
-			}
-			task()
-		}
-	}
 }

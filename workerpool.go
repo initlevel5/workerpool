@@ -14,8 +14,10 @@ const (
 
 var ErrClosed = errors.New("closed")
 
+type Task func()
+
 type workerPool struct {
-	tasks  chan func()
+	taskCh chan Task
 	wg     sync.WaitGroup
 	closed bool
 	mu     sync.RWMutex
@@ -31,26 +33,26 @@ func New(numWorkers, queueLen int) *workerPool {
 	}
 
 	pool := &workerPool{
-		tasks: make(chan func(), queueLen),
+		taskCh: make(chan Task, queueLen),
 	}
 
 	for i := 0; i < numWorkers; i++ {
 		pool.wg.Add(1)
 
-		go worker(&pool.wg, pool.tasks)
+		go worker(&pool.wg, pool.taskCh)
 	}
 
 	return pool
 }
 
-func worker(wg *sync.WaitGroup, tasks <-chan func()) {
+func worker(wg *sync.WaitGroup, taskCh <-chan Task) {
 	defer wg.Done()
 
 	for {
 		select {
 		//case <-ctx.Done():
 		//	return
-		case task, ok := <-tasks:
+		case task, ok := <-taskCh:
 			if task == nil || !ok {
 				return
 			}
@@ -59,15 +61,15 @@ func worker(wg *sync.WaitGroup, tasks <-chan func()) {
 	}
 }
 
-func (p *workerPool) AddTask(task func()) bool {
+func (p *workerPool) AddTask(task Task) bool {
 	return p.addTask(task, false)
 }
 
-func (p *workerPool) MustAddTask(task func()) bool {
+func (p *workerPool) MustAddTask(task Task) bool {
 	return p.addTask(task, true)
 }
 
-func (p *workerPool) addTask(task func(), must bool) bool {
+func (p *workerPool) addTask(task Task, must bool) bool {
 	if task == nil {
 		return false
 	}
@@ -81,14 +83,14 @@ func (p *workerPool) addTask(task func(), must bool) bool {
 
 	if !must {
 		select {
-		case p.tasks <- task:
+		case p.taskCh <- task:
 			return true
 		default:
 			return false
 		}
 	}
 
-	p.tasks <- task
+	p.taskCh <- task
 
 	return true
 }
@@ -101,7 +103,7 @@ func (p *workerPool) IsClosed() (closed bool) {
 	return
 }
 
-func (p *workerPool) Stop() {
+func (p *workerPool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -110,7 +112,7 @@ func (p *workerPool) Stop() {
 	}
 
 	p.closed = true
-	close(p.tasks)
+	close(p.taskCh)
 }
 
 func (p *workerPool) Wait() {

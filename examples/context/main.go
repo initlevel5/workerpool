@@ -83,6 +83,6 @@ func main() {
 		fmt.Println(err)
 	}
 
-	pool.Stop()
+	pool.Close()
 	pool.Wait()
 }

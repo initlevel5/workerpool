@@ -1,9 +1,14 @@
-## workerpool
+package main
 
-The workerpool usage example
+import (
+	"fmt"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
+	"github.com/initlevel5/workerpool"
+)
 
-```go
 func main() {
 	var (
 		wg      sync.WaitGroup
@@ -28,5 +33,3 @@ func main() {
 
 	fmt.Println(counter.Load())
 }
-
-```

@@ -12,7 +12,11 @@ const (
 	queueLenDefault   = 16
 )
 
-var ErrClosed = errors.New("closed")
+var (
+	ErrClosed          = errors.New("closed")
+	ErrInvalidArgument = errors.New("invalid argument")
+	ErrFull            = errors.New("task queue is full")
+)
 
 type Task func()
 
@@ -61,38 +65,31 @@ func worker(wg *sync.WaitGroup, taskCh <-chan Task) {
 	}
 }
 
-func (p *workerPool) AddTask(task Task) bool {
-	return p.addTask(task, false)
+func (p *workerPool) AddTask(task Task) error {
+	return p.addTask(task)
 }
 
-func (p *workerPool) MustAddTask(task Task) bool {
-	return p.addTask(task, true)
+func (p *workerPool) MustAddTask(task Task) {
+	if err := p.addTask(task); err != nil {
+		panic(err)
+	}
 }
 
-func (p *workerPool) addTask(task Task, must bool) bool {
+func (p *workerPool) addTask(task Task) error {
 	if task == nil {
-		return false
+		return ErrInvalidArgument
 	}
 
 	if p.IsClosed() {
-		if must {
-			panic(ErrClosed)
-		}
-		return false
+		return ErrClosed
 	}
 
-	if !must {
-		select {
-		case p.taskCh <- task:
-			return true
-		default:
-			return false
-		}
+	select {
+	case p.taskCh <- task:
+		return nil
+	default:
+		return ErrFull
 	}
-
-	p.taskCh <- task
-
-	return true
 }
 
 func (p *workerPool) IsClosed() (closed bool) {
@@ -104,6 +101,11 @@ func (p *workerPool) IsClosed() (closed bool) {
 }
 
 func (p *workerPool) Close() {
+	p.close()
+	p.wg.Wait()
+}
+
+func (p *workerPool) close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -113,8 +115,4 @@ func (p *workerPool) Close() {
 
 	p.closed = true
 	close(p.taskCh)
-}
-
-func (p *workerPool) Wait() {
-	p.wg.Wait()
 }

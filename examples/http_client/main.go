@@ -69,6 +69,7 @@ func main() {
 	urls := buildUrls()
 
 	pool := workerpool.New(numWorkers, len(urls))
+	defer pool.Close()
 
 	resultCh := make(chan *result, len(urls))
 
@@ -80,7 +81,7 @@ func main() {
 		url := url
 
 		wg.Add(1)
-		pool.AddTask(func() {
+		pool.MustAddTask(func() {
 			defer wg.Done()
 
 			start := time.Now()
@@ -112,7 +113,4 @@ func main() {
 	}
 
 	fmt.Println("elapsed: ", time.Since(start))
-
-	pool.Close()
-	pool.Wait()
 }

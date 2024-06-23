@@ -44,13 +44,15 @@ func main() {
 	}()
 
 	pool := workerpool.New(numWorkers, numTasks)
+	defer pool.Close()
 
 	errCh := make(chan error, numTasks)
 
 	for i := 0; i < numTasks; i++ {
 		id := i + 1
 
-		if pool.AddTask(func() {
+		wg.Add(1)
+		pool.MustAddTask(func() {
 			defer wg.Done()
 
 			ctxWithTimeout, ctxWithTimeoutCancel := context.WithTimeout(ctx, timeout)
@@ -65,9 +67,7 @@ func main() {
 				fmt.Printf("%d:finished\n", id)
 				return
 			}
-		}) {
-			wg.Add(1)
-		}
+		})
 	}
 
 	go func() {
@@ -82,7 +82,4 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-
-	pool.Close()
-	pool.Wait()
 }
